@@ -58,6 +58,21 @@ Matrix::Matrix(double* arr, int r, int c): rows(r), cols(c)
 	for (int i = 0; i < rows * cols; ++i) matrix[i] = arr[i];
 }
 
+// реализация конструктора с переданным initializer_list (ЛР5)
+Matrix::Matrix(std::initializer_list<double> list, int r, int c): rows(r), cols(c)
+{
+	if (rows < 1 || cols < 1 || rows*cols != list.size()) throw InputError(string("Wrong matrix dimensions were given"));
+
+	matrix = new double[rows*cols];
+	int j = 0;
+
+	for (double i : list) 
+	{
+		matrix[j] = i;
+		++j;
+	}
+}
+
 // реализация деструктора по умолчанию
 Matrix::~Matrix()
 {
@@ -74,6 +89,19 @@ Matrix::Matrix(const Matrix& M)
 	for (int i = 0; i < rows * cols; ++i)	// копирование массива
 	{
 			matrix[i] = M.matrix[i];
+	}
+}
+
+// реализация перегрузки оператора присваивания
+void Matrix::operator =(const Matrix& M)
+{
+	rows = M.rows;
+	cols = M.cols;
+	matrix = new double[rows * cols];
+
+	for (int i = 0; i < rows * cols; ++i)	// копирование массива
+	{
+		matrix[i] = M.matrix[i];
 	}
 }
 
@@ -1086,5 +1114,343 @@ void Matrix::WriteBin(ofstream& out)
 			x = matrix[i * cols + j];
 			out.write((char*)&x, sizeof(double));
 		}
+	}
+}
+
+//_______________________ Методы класса PCA для ЛР5 _________________________________________
+
+Matrix PCA::center()	// реализация метода центрирования матрицы
+{
+	Matrix tmp = matrix;
+
+	double* mean = new double[matrix.cols]{ 0 };	// массив для записи средних для всех столбцов
+
+	for (int c = 0; c < matrix.cols; ++c)
+	{
+		for (int r = 0; r < matrix.rows; ++r)
+		{
+			mean[c] += tmp.matrix[r*matrix.cols + c];
+		}
+		mean[c] = mean[c] / matrix.rows;
+	}
+
+
+	for (int c = 0; c < matrix.cols; ++c)
+	{
+		for (int r = 0; r < matrix.rows; ++r)
+		{
+			tmp.matrix[r*matrix.cols + c] -= mean[c];
+		}
+	}
+
+	return tmp;
+}
+
+Matrix PCA::scaling()	// реализация метода шкалирования матрицы
+{
+	Matrix tmp = matrix;
+
+	double* mean = new double[matrix.cols]{ 0 };	// массив для записи средних для всех столбцов
+	double* std = new double[matrix.cols]{ 0 };	// массив для записи стандартных отклонений для всех столбцов
+
+
+	for (int c = 0; c < matrix.cols; ++c)
+	{
+		for (int r = 0; r < matrix.rows; ++r)
+		{
+			mean[c] += tmp.matrix[r * matrix.cols + c];
+		}
+		mean[c] = mean[c] / matrix.rows;
+	}
+
+	for (int c = 0; c < matrix.cols; ++c)
+	{
+		for (int r = 0; r < matrix.rows; ++r)
+		{
+			std[c] += (tmp.matrix[r * matrix.cols + c] - mean[c]) * (tmp.matrix[r * matrix.cols + c] - mean[c]);
+		}
+		std[c] = std::sqrt(std[c] / (matrix.rows - 1));
+	}
+
+	for (int c = 0; c < matrix.cols; ++c)
+	{
+		for (int r = 0; r < matrix.rows; ++r)
+		{
+			if (std[c] != 0)
+				tmp.matrix[r * matrix.cols + c] = (tmp.matrix[r * matrix.cols + c] - mean[c]) / std[c];
+		}
+	}
+
+	return tmp;
+}
+
+std::tuple<Matrix, Matrix, Matrix> PCA::NIPALS(int PC)	// реализация метода для разложения матрицы алгоритмом NIPALS
+{
+
+	if(PC < 1 || PC > std::min(matrix.rows, matrix.cols)) throw InputError(string("Wrong input of PC parameter in NIPALS function"));
+
+	double eps = 1e-8;
+
+	PCA _D((*this).center());	// предобработка данных для матрицы образцов 
+	PCA D(_D.scaling());	// (число строк = числу образцов, число столбцов = число независимых переменных)
+
+	int Erows = D.matrix.rows, Ecols = D.matrix.cols;
+	Matrix E(D.matrix.matrix, Erows, Ecols);	// матрица остатков размера - Erows * Ecols
+
+	double* temp = new double[Erows];	// временный массив для хранения столбцов матрицы E
+
+	Matrix t, t_old;	// t - новая переменная (вектор как линейная комбинация столбцов матрицы D)
+	Matrix p, d;
+	double* Pmatr = new double[Ecols * PC];	// матрицы чисел, которые мы будем дополнять до нужных нам T и P
+	double* Tmatr = new double[Erows * PC];
+	int p_counter = 0, t_counter = 0;	// счётчики для запоминания текущей позиции в матрицах T и Р
+
+	for (int h = 0; h < PC; ++h)	// цикл для нахождения T и Р
+	{
+		for (int k = 0; k < Erows; ++k)
+		{
+			temp[k] = (E.Transpose()).matrix[h * Erows + k];
+		}
+		t = Matrix(temp, Erows, 1);	// присваеваем столбец h к переменной t
+
+		do
+		{
+			p = ((t.Transpose() * E)   *   (1 / (t.Transpose() * t).matrix[0])).Transpose();
+			p = p * (1 / p.EuclidNorm());	// размер - Ecols * 1
+			t_old = t;
+
+			t = (E * p)   *   (1 / (p.Transpose() * p).matrix[0]);	// размер - Erows * 1
+			d = t_old - t;
+		} while (d.EuclidNorm() > eps);
+
+		E = E - t * (p.Transpose());
+
+		for (int k = 0; k < Ecols; ++k)
+		{
+			Pmatr[p_counter] = p.matrix[k];
+			++p_counter;
+		}
+
+		for (int k = 0; k < Erows; ++k)
+		{
+			Tmatr[t_counter] = t.matrix[k];
+			++t_counter;
+		}
+	}
+
+	Matrix P(Pmatr, PC, Ecols);
+	P = P.Transpose();	// матрица нагрузок размера - Ecols * PC
+	Matrix T(Tmatr, PC, Erows);
+	T = T.Transpose();	// матрица счётов размера - Erows * PC
+
+	//E = D.matrix - T * P.Transpose();		// формула для матрицы остатков из файла (был предложен на сайте)
+
+	delete[] temp;
+	delete[] Pmatr;
+	delete[] Tmatr;
+
+	return std::make_tuple(T, P, E);	// D = T * P.Transpose() + E
+}
+
+Matrix PCA::leverage(int PC)	// реализация метода для подсчёта размахов матрицы для каждой строки
+{
+	if (PC < 1 || PC > std::min(matrix.rows, matrix.cols)) throw InputError(string("Wrong input of PC parameter in 'leverages' method"));
+
+	std::tuple<Matrix, Matrix, Matrix> nipals_res = this->NIPALS(PC);
+
+	Matrix T = std::get<0>(nipals_res);
+	Matrix t;
+	double* leverages = new double[T.rows];
+	double* temp = new double[T.cols];
+
+	for (int h = 0; h < T.rows; ++h)
+	{
+		for (int k = 0; k < T.cols; ++k)
+		{
+			temp[k] = T.matrix[h * T.cols + k];
+		}
+		t = Matrix(temp, T.cols, 1);	// h-ая строка матрицы T (h-ый образец) => преобразуем в столбец
+
+		leverages[h] = (t.Transpose() * ((T.Transpose() * T).Reverse()) * t).matrix[0];
+	}
+
+	Matrix h(leverages, T.rows, 1);
+
+	delete[] leverages;
+	delete[] temp;
+
+	return h;
+}
+
+Matrix PCA::deviation(int PC)	// реализация метода для подсчёта отклонений для всех строк матрицы
+{
+	if (PC < 1 || PC > std::min(matrix.rows, matrix.cols)) throw InputError(string("Wrong input of PC parameter in 'deviation' method"));
+
+	std::tuple<Matrix, Matrix, Matrix> nipals_res = this->NIPALS(PC);
+
+	Matrix E = std::get<2>(nipals_res);
+
+	double* temp = new double[E.rows];
+
+	double sum = 0;		// отклонение для строки матрицы Е - это сумма квадратов остатков в этой строке
+
+	for (int i = 0; i < E.rows; i++) {
+		for (int j = 0; j < E.cols; j++) {
+			sum += pow(E.matrix[i * E.cols + j], 2);
+		}
+		temp[i] = sum;
+		sum = 0;
+	}
+
+	Matrix res(temp, E.rows, 1);
+
+	delete[] temp;
+
+	return res;
+}
+
+std::pair<double, double> PCA::dispersion(int PC)	// метод для подсчёта полной и объяснённой дисперсий матрицы
+{
+	if (PC < 1 || PC > std::min(matrix.rows, matrix.cols)) throw InputError(string("Wrong input of PC parameter in 'dispersion' method"));
+
+	// TRV - полная дисперсия остатков, ERV - объяснённая дисперсия остатков
+
+	Matrix v = this->deviation(PC);	// вектор отклонений
+
+	double v0 = 0;
+	int I = matrix.rows;
+	int J = matrix.cols;
+
+	for (int i = 0; i < I; ++i)
+	{
+		v0 += v.matrix[i];
+	}
+	v0 = v0 / I;
+
+	double TRV = v0 / J;	// полная дисперсия остатков
+
+	double ERV = 0;
+
+	Matrix X = this->scaling();
+
+	for (int i = 0; i < I; ++i)
+	{
+		for (int j = 0; j < J; ++j) ERV += pow(X.matrix[i * J + j], 2);
+	}
+
+	ERV = 1 - I * v0 / ERV;	// объяснённая дисперсия остатков
+
+	return std::make_pair(TRV, ERV);	// сначала полная, затем объяснённая дисперсии остатков
+}
+
+//__________________________________ Вспомогательные функции для ЛР6 _______________________________________
+
+std::atomic_flag lock_stdout = ATOMIC_FLAG_INIT;	// атомарный флаг для блокировки вывода сообщений в консоль
+void Game(int id)	// реализация функции для ЛР6 для изображения игры на поле (id - номер игрока)
+{
+	static int flag = 0;	// флаг для отображения конца игры (0 - игра ещё не окончена, 1 - победа первого игрока, 2 - победа второго)
+	int curr_pos = 1;	// текущая позиция игрока на поле
+	srand(time(nullptr)); // используем текущее время как параметр seed для генератора псевдослучайных чисел
+	int dice;	// значение на игральной кости после броска
+
+	while (lock_stdout.test_and_set()) {}	// используются для блокировки вывода сообщений в консоль, чтобы не наслаивались друг на друга
+	std::cout << "Player " << id << " starts from position ---> " << curr_pos << endl;
+	lock_stdout.clear();
+
+	while (1)
+	{
+
+		if (flag != 0)
+		{
+			while (lock_stdout.test_and_set()) {}
+			std::cout << "Player " << id << " loses\n";
+			lock_stdout.clear();
+			break;
+		}
+
+		dice = 1 + std::rand() / (RAND_MAX / 6);
+		curr_pos += dice;
+		if (curr_pos >= 30) {
+			while (lock_stdout.test_and_set()) {}
+			flag = id;
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << 30 << endl;
+			std::cout << "The winner is " << id << " player\n";
+			lock_stdout.clear();
+			break;
+		}
+
+		while (lock_stdout.test_and_set()) {}
+		switch (curr_pos)
+		{
+		case 3:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos + 3 << endl;
+			curr_pos += 3;
+			break;
+		case 5:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos - 1 << endl;
+			curr_pos -= 1;
+			break;
+		case 8:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << 21 << endl;
+			curr_pos = 21;
+			break;
+		case 9:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos - 3 << endl;
+			curr_pos -= 3;
+			break;
+		case 11:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos + 3 << endl;
+			curr_pos += 3;
+			break;
+		case 13:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos + 1 << endl;
+			curr_pos += 1;		
+			break;
+		case 15:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos - 3 << endl;
+			curr_pos -= 3;	
+			break;
+		case 16:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << 7 << endl;
+			curr_pos = 7;
+			break;
+		case 19:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos + 1 << endl;
+			curr_pos += 1;	
+			break;
+		case 23:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos - 2 << endl;
+			curr_pos -= 2;	
+			break;
+		case 25:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << 1 << endl;
+			curr_pos = 1;
+			break;
+		case 27:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos + 1 << endl;
+			curr_pos += 1;
+			break;
+		case 29:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			std::cout << "It was an interaction cell => now the position for player " << id << " is ---> " << curr_pos - 3 << endl;
+			curr_pos -= 3;
+			break;
+		default:
+			std::cout << "\nNew throw for the " << id << " player:\n\tDice points ---> " << dice << "\n\tCurrent position ---> " << curr_pos << endl;
+			break;
+		}
+		lock_stdout.clear();
 	}
 }
